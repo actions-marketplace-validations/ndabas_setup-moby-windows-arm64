@@ -113,8 +113,13 @@ runs:
           $tag = 'local'
         } else {
           if ($env:VERSION -eq 'latest' -or -not $env:VERSION) {
-            $tag = gh release view --repo $env:REPOSITORY --json tagName --jq .tagName
-            if ($LASTEXITCODE -ne 0 -or -not $tag) { throw "Could not find the latest release in $env:REPOSITORY" }
+            # The repository's "Latest" release may be a release of the action itself (e.g. v1),
+            # so pick the highest docker-vX.Y.Z release instead.
+            $tags = gh release list --repo $env:REPOSITORY --exclude-drafts --exclude-pre-releases --limit 100 --json tagName --jq '.[].tagName'
+            if ($LASTEXITCODE -ne 0) { throw "Could not list the releases of $env:REPOSITORY" }
+            $tag = $tags | Where-Object { $_ -match '^docker-v\d+\.\d+\.\d+$' } |
+              Sort-Object { [version]($_ -replace '^docker-v', '') } -Descending | Select-Object -First 1
+            if (-not $tag) { throw "Could not find a docker-v* release in $env:REPOSITORY" }
           } elseif ($env:VERSION -like 'docker-*') {
             $tag = $env:VERSION
           } else {

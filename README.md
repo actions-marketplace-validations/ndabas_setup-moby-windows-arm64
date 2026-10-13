@@ -25,7 +25,7 @@ which name the moby builds that the `version` input installs.
 
 | Input                     | Default                        | Description                                                                                                                      |
 | ------------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| `version`                 | `latest`                       | Release to install: `latest`, or a moby release tag such as `docker-v29.9.0` (`29.9.0` and `v29.9.0` are also accepted).         |
+| `version`                 | `latest`                       | Release to install: `latest` (the highest `docker-v*` release), or a moby release tag such as `docker-v29.9.0` (`29.9.0` and `v29.9.0` are also accepted). |
 | `repository`              | the action's repository        | Repository to download the build from.                                                                                           |
 | `binaries-path`           |                                | Use `docker.exe` and `dockerd.exe` from this local directory instead of downloading a release.                                   |
 | `skip-if-present`         | `true`                         | If `docker` is already on `PATH`, use it and do nothing.                                                                         |
@@ -62,7 +62,7 @@ When the action is skipped this way, all of its outputs are empty.
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/ndabas/setup-moby-windows-arm64/master/Install-Moby.ps1)))
 ```
 
-It downloads the latest release (or `-Version docker-v29.9.0`, or a local build with `-SourcePath`), verifies its
+It downloads the latest `docker-v*` release (or `-Version docker-v29.9.0`, or a local build with `-SourcePath`), verifies its
 checksum, and installs `docker.exe` and `dockerd.exe` to `C:\Program Files\moby`, which it adds to the machine
 `PATH`. It then writes `C:\ProgramData\docker\config\daemon.json`, registers `dockerd` as the `docker` service, and
 starts it. If the Windows Containers feature isn't enabled, the script enables it and asks you to restart.

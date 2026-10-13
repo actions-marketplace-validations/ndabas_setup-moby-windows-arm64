@@ -196,7 +196,13 @@ try {
         if ($token) { $headers['Authorization'] = "Bearer $token" }
 
         if ($Version -eq 'latest' -or -not $Version) {
-            $tag = (Invoke-RestMethod "https://api.github.com/repos/$Repository/releases/latest" -Headers $headers -UserAgent $userAgent).tag_name
+            # The repository's "Latest" release may be a release of the action itself (e.g. v1),
+            # so pick the highest docker-vX.Y.Z release instead.
+            $releases = Invoke-RestMethod "https://api.github.com/repos/$Repository/releases?per_page=100" -Headers $headers -UserAgent $userAgent
+            $tag = $releases | Where-Object { -not $_.draft -and -not $_.prerelease -and $_.tag_name -match '^docker-v\d+\.\d+\.\d+$' } |
+                ForEach-Object { $_.tag_name } |
+                Sort-Object { [version]($_ -replace '^docker-v', '') } -Descending | Select-Object -First 1
+            if (-not $tag) { throw "Could not find a docker-v* release in $Repository" }
         } elseif ($Version -like 'docker-*') {
             $tag = $Version
         } else {
