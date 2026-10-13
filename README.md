@@ -10,13 +10,16 @@ jobs:
   build:
     runs-on: windows-11-arm
     steps:
-      - uses: ndabas/setup-moby-windows-arm64@main
+      - uses: ndabas/setup-moby-windows-arm64@v1
       - run: docker run --rm mcr.microsoft.com/windows/nanoserver:ltsc2025-arm64 cmd /c ver
 ```
 
 The action downloads a release from this repository, adds `docker.exe` and `dockerd.exe` to `PATH`, registers
 `dockerd` as a Windows service, starts it, and waits until the daemon is ready. If `docker` is already on `PATH`,
 the action does nothing by default and adds a notice annotation to the workflow run.
+
+The `v1` tag tracks the latest compatible version of the action. It is separate from the `docker-v*` release tags,
+which name the moby builds that the `version` input installs.
 
 ### Inputs
 
@@ -36,7 +39,7 @@ the action does nothing by default and adds a notice annotation to the workflow 
 For example, to use the action in a job that also runs on other platforms:
 
 ```yaml
-      - uses: ndabas/setup-moby-windows-arm64@main
+      - uses: ndabas/setup-moby-windows-arm64@v1
         with:
           platform-check-severity: warn
 ```
@@ -56,7 +59,7 @@ When the action is skipped this way, all of its outputs are empty.
 [Install-Moby.ps1](Install-Moby.ps1) installs a release on a Windows ARM64 machine. From an elevated PowerShell:
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/ndabas/setup-moby-windows-arm64/main/Install-Moby.ps1)))
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/ndabas/setup-moby-windows-arm64/master/Install-Moby.ps1)))
 ```
 
 It downloads the latest release (or `-Version docker-v29.9.0`, or a local build with `-SourcePath`), verifies its
