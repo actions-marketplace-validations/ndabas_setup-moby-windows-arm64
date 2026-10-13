@@ -88,7 +88,7 @@ runs:
         "supported=true" >> $env:GITHUB_OUTPUT
         $docker = Get-Command docker -ErrorAction SilentlyContinue
         if ($docker -and $env:SKIP_IF_PRESENT -eq 'true') {
-          Write-Host "Using pre-installed docker: $($docker.Source)"
+          Write-Host "::notice::Using pre-installed docker at $($docker.Source) instead of installing one. Set 'skip-if-present' to 'false' to install anyway."
           "preinstalled=true" >> $env:GITHUB_OUTPUT
           "docker-path=$(Split-Path $docker.Source)" >> $env:GITHUB_OUTPUT
         } else {
