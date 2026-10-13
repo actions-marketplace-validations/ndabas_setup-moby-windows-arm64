@@ -47,6 +47,12 @@ inputs:
     description: GitHub token used to query and download releases.
     required: false
     default: ${{ github.token }}
+  platform-check-severity:
+    description: >-
+      What to do when run on a runner that is not Windows ARM64: 'fatal' fails the step,
+      'warn' logs a warning and skips the rest of the action.
+    required: false
+    default: fatal
 
 outputs:
   version:
@@ -67,10 +73,19 @@ runs:
       shell: pwsh
       env:
         SKIP_IF_PRESENT: ${{ inputs.skip-if-present }}
+        PLATFORM_CHECK_SEVERITY: ${{ inputs.platform-check-severity }}
       run: |
-        if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'ARM64') {
-          throw "setup-moby-windows-arm64 only supports Windows ARM64 runners (got $env:RUNNER_OS/$env:RUNNER_ARCH)"
+        if ($env:PLATFORM_CHECK_SEVERITY -notin 'fatal', 'warn') {
+          throw "Invalid platform-check-severity '$env:PLATFORM_CHECK_SEVERITY': expected 'fatal' or 'warn'"
         }
+        if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'ARM64') {
+          $message = "setup-moby-windows-arm64 only supports Windows ARM64 runners (got $env:RUNNER_OS/$env:RUNNER_ARCH)"
+          if ($env:PLATFORM_CHECK_SEVERITY -eq 'fatal') { throw $message }
+          Write-Host "::warning::$message; skipping."
+          "supported=false" >> $env:GITHUB_OUTPUT
+          exit 0
+        }
+        "supported=true" >> $env:GITHUB_OUTPUT
         $docker = Get-Command docker -ErrorAction SilentlyContinue
         if ($docker -and $env:SKIP_IF_PRESENT -eq 'true') {
           Write-Host "Using pre-installed docker: $($docker.Source)"
@@ -82,7 +97,7 @@ runs:
 
     - name: Install Docker binaries
       id: install
-      if: steps.check.outputs.preinstalled != 'true'
+      if: steps.check.outputs.supported == 'true' && steps.check.outputs.preinstalled != 'true'
       shell: pwsh
       env:
         GH_TOKEN: ${{ inputs.token }}
@@ -134,7 +149,7 @@ runs:
         "docker-path=$dir" >> $env:GITHUB_OUTPUT
 
     - name: Start dockerd
-      if: steps.check.outputs.preinstalled != 'true' && inputs.start-daemon == 'true'
+      if: steps.check.outputs.supported == 'true' && steps.check.outputs.preinstalled != 'true' && inputs.start-daemon == 'true'
       shell: pwsh
       env:
         DOCKER_PATH: ${{ steps.install.outputs.docker-path }}

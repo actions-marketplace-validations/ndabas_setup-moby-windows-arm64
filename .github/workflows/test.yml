@@ -28,6 +28,34 @@ on:
       - .github/workflows/test.yml
 
 jobs:
+  platform-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Run the action with platform-check-severity warn
+        id: warn
+        uses: ./
+        with:
+          platform-check-severity: warn
+
+      - name: Run the action with platform-check-severity fatal
+        id: fatal
+        continue-on-error: true
+        uses: ./
+
+      - name: Check results
+        shell: pwsh
+        env:
+          WARN_OUTCOME: ${{ steps.warn.outcome }}
+          WARN_DOCKER_PATH: ${{ steps.warn.outputs.docker-path }}
+          FATAL_OUTCOME: ${{ steps.fatal.outcome }}
+        run: |
+          if ($env:WARN_OUTCOME -ne 'success') { throw "Expected warn to succeed, got $env:WARN_OUTCOME" }
+          if ($env:WARN_DOCKER_PATH) { throw "Expected warn to skip installation, got docker-path $env:WARN_DOCKER_PATH" }
+          if ($env:FATAL_OUTCOME -ne 'failure') { throw "Expected fatal to fail, got $env:FATAL_OUTCOME" }
+
   test:
     runs-on: windows-11-arm
     strategy:
