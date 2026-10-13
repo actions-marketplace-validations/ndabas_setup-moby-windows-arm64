@@ -1,0 +1,171 @@
+name: Setup moby (Docker) for Windows ARM64
+description: Download a Windows ARM64 build of the moby Docker engine and client, add it to PATH, and start dockerd.
+author: ndabas
+
+branding:
+  icon: box
+  color: blue
+
+inputs:
+  version:
+    description: >-
+      Release to install: 'latest', or a moby release tag such as 'docker-v29.9.0'
+      ('29.9.0' and 'v29.9.0' are also accepted).
+    required: false
+    default: latest
+  repository:
+    description: Repository to download the build from. Defaults to the repository hosting this action.
+    required: false
+    default: ''
+  binaries-path:
+    description: >-
+      Use docker.exe and dockerd.exe from this local directory instead of downloading a release.
+      Useful for testing a build before it is released.
+    required: false
+    default: ''
+  skip-if-present:
+    description: If 'true' and docker is already on PATH, do nothing and use the existing installation.
+    required: false
+    default: 'true'
+  start-daemon:
+    description: If 'true', register dockerd as a Windows service, start it and wait until it is ready.
+    required: false
+    default: 'true'
+  dockerd-args:
+    description: Extra arguments passed to dockerd.
+    required: false
+    default: --exec-opt isolation=process
+  service-name:
+    description: Name of the Windows service to register dockerd as.
+    required: false
+    default: docker
+  timeout-seconds:
+    description: How long to wait for dockerd to become ready.
+    required: false
+    default: '180'
+  token:
+    description: GitHub token used to query and download releases.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  version:
+    description: The release tag that was installed ('local' when binaries-path is used, empty if pre-installed docker was used).
+    value: ${{ steps.install.outputs.version }}
+  docker-path:
+    description: Directory containing docker.exe and dockerd.exe.
+    value: ${{ steps.install.outputs.docker-path || steps.check.outputs.docker-path }}
+  preinstalled:
+    description: "'true' if an existing docker on PATH was used and nothing was installed."
+    value: ${{ steps.check.outputs.preinstalled }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check for an existing Docker on PATH
+      id: check
+      shell: pwsh
+      env:
+        SKIP_IF_PRESENT: ${{ inputs.skip-if-present }}
+      run: |
+        if ($env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'ARM64') {
+          throw "setup-moby-windows-arm64 only supports Windows ARM64 runners (got $env:RUNNER_OS/$env:RUNNER_ARCH)"
+        }
+        $docker = Get-Command docker -ErrorAction SilentlyContinue
+        if ($docker -and $env:SKIP_IF_PRESENT -eq 'true') {
+          Write-Host "Using pre-installed docker: $($docker.Source)"
+          "preinstalled=true" >> $env:GITHUB_OUTPUT
+          "docker-path=$(Split-Path $docker.Source)" >> $env:GITHUB_OUTPUT
+        } else {
+          "preinstalled=false" >> $env:GITHUB_OUTPUT
+        }
+
+    - name: Install Docker binaries
+      id: install
+      if: steps.check.outputs.preinstalled != 'true'
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        VERSION: ${{ inputs.version }}
+        REPOSITORY: ${{ inputs.repository || github.action_repository || github.repository }}
+        BINARIES_PATH: ${{ inputs.binaries-path }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $asset = 'docker-windows-arm64.zip'
+
+        if ($env:BINARIES_PATH) {
+          $dir = (Resolve-Path $env:BINARIES_PATH).Path
+          $tag = 'local'
+        } else {
+          if ($env:VERSION -eq 'latest' -or -not $env:VERSION) {
+            $tag = gh release view --repo $env:REPOSITORY --json tagName --jq .tagName
+            if ($LASTEXITCODE -ne 0 -or -not $tag) { throw "Could not find the latest release in $env:REPOSITORY" }
+          } elseif ($env:VERSION -like 'docker-*') {
+            $tag = $env:VERSION
+          } else {
+            $tag = 'docker-v' + ($env:VERSION -replace '^v', '')
+          }
+          Write-Host "Installing $tag from $env:REPOSITORY"
+
+          $dir = Join-Path $env:RUNNER_TOOL_CACHE "moby-windows-arm64\$tag"
+          if (-not (Test-Path "$dir\dockerd.exe")) {
+            $download = Join-Path $env:RUNNER_TEMP "moby-$tag"
+            New-Item -ItemType Directory -Force -Path $download | Out-Null
+            gh release download $tag --repo $env:REPOSITORY --dir $download --clobber `
+              --pattern $asset --pattern "$asset.sha256"
+            if ($LASTEXITCODE -ne 0) { throw "Could not download $asset from release $tag of $env:REPOSITORY" }
+
+            $expected = ((Get-Content "$download\$asset.sha256" -Raw).Trim() -split '\s+')[0]
+            $actual = (Get-FileHash "$download\$asset" -Algorithm SHA256).Hash
+            if ($actual -ne $expected) { throw "Checksum mismatch for $asset`: expected $expected, got $actual" }
+
+            Expand-Archive "$download\$asset" -DestinationPath $dir -Force
+            Remove-Item $download -Recurse -Force
+          } else {
+            Write-Host "Using cached binaries in $dir"
+          }
+        }
+
+        foreach ($exe in 'docker.exe', 'dockerd.exe') {
+          if (-not (Test-Path (Join-Path $dir $exe))) { throw "$exe not found in $dir" }
+        }
+        $dir >> $env:GITHUB_PATH
+        "version=$tag" >> $env:GITHUB_OUTPUT
+        "docker-path=$dir" >> $env:GITHUB_OUTPUT
+
+    - name: Start dockerd
+      if: steps.check.outputs.preinstalled != 'true' && inputs.start-daemon == 'true'
+      shell: pwsh
+      env:
+        DOCKER_PATH: ${{ steps.install.outputs.docker-path }}
+        DOCKERD_ARGS: ${{ inputs.dockerd-args }}
+        SERVICE_NAME: ${{ inputs.service-name }}
+        TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $dockerd = Join-Path $env:DOCKER_PATH 'dockerd.exe'
+        $docker = Join-Path $env:DOCKER_PATH 'docker.exe'
+
+        if (Get-Service $env:SERVICE_NAME -ErrorAction SilentlyContinue) {
+          throw "A service named '$env:SERVICE_NAME' already exists. Set 'service-name' to a different name, or 'skip-if-present' to use the existing installation."
+        }
+
+        # Composite actions cannot use background steps, so run dockerd as a service that outlives this step.
+        $dockerdArgs = @('--register-service', '--service-name', $env:SERVICE_NAME)
+        if ($env:DOCKERD_ARGS) { $dockerdArgs += $env:DOCKERD_ARGS -split '\s+' | Where-Object { $_ } }
+        & $dockerd @dockerdArgs
+        if ($LASTEXITCODE -ne 0) { throw "dockerd --register-service failed with exit code $LASTEXITCODE" }
+        Start-Service $env:SERVICE_NAME
+
+        $deadline = (Get-Date).AddSeconds([int]$env:TIMEOUT_SECONDS)
+        while ($true) {
+          & $docker version *> $null
+          if ($LASTEXITCODE -eq 0) { break }
+          if ((Get-Date) -gt $deadline) {
+            Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = $env:SERVICE_NAME } -MaxEvents 50 -ErrorAction SilentlyContinue |
+              Sort-Object TimeCreated | Format-Table TimeCreated, LevelDisplayName, Message -Wrap | Out-String -Width 300 | Write-Host
+            throw 'dockerd did not become ready in time'
+          }
+          Start-Sleep -Seconds 5
+        }
+        & $docker version

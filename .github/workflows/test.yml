@@ -1,0 +1,115 @@
+name: Test
+
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        description: Name of a workflow artifact containing docker.exe and dockerd.exe to test instead of a release.
+        type: string
+        default: ''
+      version:
+        description: Release to test when no artifact is given.
+        type: string
+        default: latest
+      expected-version:
+        description: Docker server version the daemon is expected to report, e.g. 29.9.0.
+        type: string
+        default: ''
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release to test ('latest' or a moby tag such as docker-v29.9.0)
+        type: string
+        default: latest
+  pull_request:
+    paths:
+      - action.yml
+      - Install-Moby.ps1
+      - .github/workflows/test.yml
+
+jobs:
+  test:
+    runs-on: windows-11-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        method: [action, script]
+    name: test (${{ matrix.method }})
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Download Docker binaries
+        if: inputs.artifact-name != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: docker-bin
+
+      - name: Set up moby with the action
+        id: setup-action
+        if: matrix.method == 'action'
+        uses: ./
+        with:
+          version: ${{ inputs.version || 'latest' }}
+          binaries-path: ${{ inputs.artifact-name != '' && 'docker-bin' || '' }}
+          skip-if-present: 'false'
+
+      - name: Set up moby with the install script
+        id: setup-script
+        if: matrix.method == 'script'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version || 'latest' }}
+          SOURCE_PATH: ${{ inputs.artifact-name != '' && 'docker-bin' || '' }}
+        run: |
+          $installPath = Join-Path $env:RUNNER_TEMP 'moby'
+          $params = @{ InstallPath = $installPath; Repository = $env:GITHUB_REPOSITORY }
+          if ($env:SOURCE_PATH) { $params.SourcePath = $env:SOURCE_PATH } else { $params.Version = $env:VERSION }
+          ./Install-Moby.ps1 @params
+          # Run again to exercise upgrading an existing installation.
+          ./Install-Moby.ps1 @params
+          $installPath >> $env:GITHUB_PATH
+          "docker-path=$installPath" >> $env:GITHUB_OUTPUT
+          "version=$(if ($env:SOURCE_PATH) { 'local' } else { $env:VERSION })" >> $env:GITHUB_OUTPUT
+
+      - name: Check installed version
+        shell: pwsh
+        env:
+          DOCKER_PATH: ${{ steps.setup-action.outputs.docker-path || steps.setup-script.outputs.docker-path }}
+          INSTALLED_VERSION: ${{ steps.setup-action.outputs.version || steps.setup-script.outputs.version }}
+          EXPECTED_VERSION: ${{ inputs.expected-version }}
+        run: |
+          Write-Host "Installed $env:INSTALLED_VERSION in $env:DOCKER_PATH"
+          $docker = (Get-Command docker).Source
+          if ((Split-Path $docker) -ne $env:DOCKER_PATH) { throw "Unexpected docker on PATH: $docker" }
+          $version = docker version --format '{{.Server.Version}}'
+          if ($LASTEXITCODE -ne 0) { throw "docker version failed with exit code $LASTEXITCODE" }
+          Write-Host "Server version: $version"
+          if ($env:EXPECTED_VERSION -and $version -ne $env:EXPECTED_VERSION) {
+            throw "Expected server version $env:EXPECTED_VERSION, got $version"
+          }
+
+      - name: Run smoke test container
+        shell: pwsh
+        run: |
+          docker run --rm mcr.microsoft.com/windows/nanoserver:ltsc2025-arm64 `
+            cmd /c "echo Hello from inside the container && echo Architecture: %PROCESSOR_ARCHITECTURE% && ver"
+          if ($LASTEXITCODE -ne 0) { throw "Smoke test failed with exit code $LASTEXITCODE" }
+
+      - name: Build and run an image
+        shell: pwsh
+        run: |
+          $context = Join-Path $env:RUNNER_TEMP 'moby-smoke-test'
+          New-Item -ItemType Directory -Force -Path $context | Out-Null
+          @(
+            'FROM mcr.microsoft.com/windows/nanoserver:ltsc2025-arm64'
+            'RUN echo built> C:\built.txt'
+            'CMD ["cmd", "/c", "type C:\\built.txt"]'
+          ) | Set-Content -Path "$context\Dockerfile"
+          docker build -t moby-smoke-test $context
+          if ($LASTEXITCODE -ne 0) { throw "Build failed with exit code $LASTEXITCODE" }
+          $output = docker run --rm moby-smoke-test
+          if ($LASTEXITCODE -ne 0) { throw "Run failed with exit code $LASTEXITCODE" }
+          if ("$output".Trim() -ne 'built') { throw "Unexpected output: $output" }
