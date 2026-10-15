@@ -58,6 +58,8 @@ jobs:
           WARN_DOCKER_PATH: ${{ steps.warn.outputs.docker-path }}
           FATAL_OUTCOME: ${{ steps.fatal.outcome }}
         run: |
+          #Requires -Version 7.4
+          $PSNativeCommandUseErrorActionPreference = $true
           if ($env:WARN_OUTCOME -ne 'success') { throw "Expected warn to succeed, got $env:WARN_OUTCOME" }
           if ($env:WARN_DOCKER_PATH) { throw "Expected warn to skip installation, got docker-path $env:WARN_DOCKER_PATH" }
           if ($env:FATAL_OUTCOME -ne 'failure') { throw "Expected fatal to fail, got $env:FATAL_OUTCOME" }
@@ -98,6 +100,8 @@ jobs:
           VERSION: ${{ inputs.version || 'latest' }}
           SOURCE_PATH: ${{ inputs.artifact-name != '' && 'docker-bin' || '' }}
         run: |
+          #Requires -Version 7.4
+          $PSNativeCommandUseErrorActionPreference = $true
           $installPath = Join-Path $env:RUNNER_TEMP 'moby'
           $params = @{ InstallPath = $installPath; Repository = $env:GITHUB_REPOSITORY }
           if ($env:SOURCE_PATH) { $params.SourcePath = $env:SOURCE_PATH } else { $params.Version = $env:VERSION }
@@ -122,12 +126,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version || 'latest' }}
         run: |
+          #Requires -Version 7.4
+          $PSNativeCommandUseErrorActionPreference = $true
           $asset = 'docker-windows-arm64-setup.exe'
           if ($env:VERSION -eq 'latest') {
             # The repository's "Latest" release may be a release of the action itself (e.g. v1),
             # so pick the highest docker-vX.Y.Z release instead.
             $tags = gh release list --repo $env:GITHUB_REPOSITORY --exclude-drafts --exclude-pre-releases --limit 100 --json tagName --jq '.[].tagName'
-            if ($LASTEXITCODE -ne 0) { throw "Could not list the releases of $env:GITHUB_REPOSITORY" }
             $tag = $tags | Where-Object { $_ -match '^docker-v\d+\.\d+\.\d+$' } |
               Sort-Object { [version]($_ -replace '^docker-v', '') } -Descending | Select-Object -First 1
             if (-not $tag) { throw "Could not find a docker-v* release in $env:GITHUB_REPOSITORY" }
@@ -135,12 +140,11 @@ jobs:
             $tag = $env:VERSION
           } else {
             $tag = 'docker-v' + ($env:VERSION -replace '^v', '')
-            }
+          }
 
-            Write-Host "Downloading $asset from $tag"
+          Write-Host "Downloading $asset from $tag"
           gh release download $tag --repo $env:GITHUB_REPOSITORY --dir installer-bin --clobber `
             --pattern $asset --pattern "$asset.sha256"
-          if ($LASTEXITCODE -ne 0) { throw "Could not download $asset from release $tag" }
           $expected = ((Get-Content "installer-bin\$asset.sha256" -Raw).Trim() -split '\s+')[0]
           $actual = (Get-FileHash "installer-bin\$asset" -Algorithm SHA256).Hash
           if ($actual -ne $expected) { throw "Checksum mismatch for $asset`: expected $expected, got $actual" }
@@ -150,7 +154,9 @@ jobs:
         if: matrix.method == 'installer'
         shell: pwsh
         run: |
-          $installer = (Resolve-Path installer-bin\docker-windows-arm64-setup.exe).Path
+          #Requires -Version 7.4
+          $PSNativeCommandUseErrorActionPreference = $true
+          $installer =  (Resolve-Path installer-bin\docker-windows-arm64-setup.exe).Path
           $installPath = Join-Path $env:RUNNER_TEMP 'moby'
           # Run twice to exercise upgrading an existing installation. /D= must be the last argument and unquoted.
           for ($i = 0; $i -lt 2; $i++) {
@@ -171,11 +177,12 @@ jobs:
           INSTALLED_VERSION: ${{ steps.setup-action.outputs.version || steps.setup-script.outputs.version || steps.setup-installer.outputs.version }}
           EXPECTED_VERSION: ${{ inputs.expected-version }}
         run: |
+          #Requires -Version 7.4
+          $PSNativeCommandUseErrorActionPreference = $true
           Write-Host "Installed $env:INSTALLED_VERSION in $env:DOCKER_PATH"
           $docker = (Get-Command docker).Source
           if ((Split-Path $docker) -ne $env:DOCKER_PATH) { throw "Unexpected docker on PATH: $docker" }
           $version = docker version --format '{{.Server.Version}}'
-          if ($LASTEXITCODE -ne 0) { throw "docker version failed with exit code $LASTEXITCODE" }
           Write-Host "Server version: $version"
           if ($env:EXPECTED_VERSION -and $version -ne $env:EXPECTED_VERSION) {
             throw "Expected server version $env:EXPECTED_VERSION, got $version"
@@ -184,13 +191,16 @@ jobs:
       - name: Run smoke test container
         shell: pwsh
         run: |
+          #Requires -Version 7.4
+          $PSNativeCommandUseErrorActionPreference = $true
           docker run --rm mcr.microsoft.com/windows/nanoserver:ltsc2025-arm64 `
             cmd /c "echo Hello from inside the container && echo Architecture: %PROCESSOR_ARCHITECTURE% && ver"
-          if ($LASTEXITCODE -ne 0) { throw "Smoke test failed with exit code $LASTEXITCODE" }
 
       - name: Build and run an image
         shell: pwsh
         run: |
+          #Requires -Version 7.4
+          $PSNativeCommandUseErrorActionPreference = $true
           $context = Join-Path $env:RUNNER_TEMP 'moby-smoke-test'
           New-Item -ItemType Directory -Force -Path $context | Out-Null
           @(
@@ -199,9 +209,7 @@ jobs:
             'CMD ["cmd", "/c", "type C:\\built.txt"]'
           ) | Set-Content -Path "$context\Dockerfile"
           docker build -t moby-smoke-test $context
-          if ($LASTEXITCODE -ne 0) { throw "Build failed with exit code $LASTEXITCODE" }
           $output = docker run --rm moby-smoke-test
-          if ($LASTEXITCODE -ne 0) { throw "Run failed with exit code $LASTEXITCODE" }
           if ("$output".Trim() -ne 'built') { throw "Unexpected output: $output" }
 
       - name: Uninstall
@@ -211,6 +219,8 @@ jobs:
           METHOD: ${{ matrix.method }}
           DOCKER_PATH: ${{ steps.setup-script.outputs.docker-path || steps.setup-installer.outputs.docker-path }}
         run: |
+          #Requires -Version 7.4
+          $PSNativeCommandUseErrorActionPreference = $true
           if ($env:METHOD -eq 'script') {
             ./Install-Moby.ps1 -Uninstall -InstallPath $env:DOCKER_PATH
           } else {

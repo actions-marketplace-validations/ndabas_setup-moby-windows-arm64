@@ -89,9 +89,10 @@ jobs:
       - name: Clone moby
         shell: pwsh
         run: |
+          #Requires -Version 7.4
+          $PSNativeCommandUseErrorActionPreference = $true
           git config --global core.longpaths true
           git -c advice.detachedHead=false clone --depth 1 --branch '${{ needs.check.outputs.tag }}' "https://github.com/$env:MOBY_REPO.git" moby
-          if ($LASTEXITCODE -ne 0) { throw "git clone failed with exit code $LASTEXITCODE" }
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -104,6 +105,8 @@ jobs:
         env:
           VERSION: ${{ needs.check.outputs.version }}
         run: |
+          #Requires -Version 7.4
+          $PSNativeCommandUseErrorActionPreference = $true
           go install github.com/tc-hib/go-winres@latest
           $env:GOPATH = go env GOPATH
           $env:Path += ";$env:GOPATH\bin"
@@ -125,10 +128,11 @@ jobs:
         env:
           VERSION: ${{ needs.check.outputs.version }}
         run: |
+          #Requires -Version 7.4
+          $PSNativeCommandUseErrorActionPreference = $true
           New-Item -ItemType Directory -Force -Path installer | Out-Null
           # makensis resolves relative paths from the script's directory.
           makensis /V2 /WX "/DVERSION=$env:VERSION" "/DBINDIR=$PWD\docker-bin" "/DOUTFILE=$PWD\installer\$env:INSTALLER_ARTIFACT_NAME.exe" setup-moby\installer\moby.nsi
-          if ($LASTEXITCODE -ne 0) { throw "makensis failed with exit code $LASTEXITCODE" }
 
       - name: Upload installer
         uses: actions/upload-artifact@v7

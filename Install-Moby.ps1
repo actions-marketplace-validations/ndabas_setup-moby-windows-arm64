@@ -114,6 +114,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Exit codes are checked explicitly; don't let a caller's preference make expected failures throw.
+$PSNativeCommandUseErrorActionPreference = $false
 $ProgressPreference = 'SilentlyContinue'
 $ServiceName = 'docker'
 $Asset = 'docker-windows-arm64.zip'

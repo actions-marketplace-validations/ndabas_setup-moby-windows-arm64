@@ -46,10 +46,15 @@ jobs:
       - name: Install PSScriptAnalyzer
         shell: pwsh
         run: |
+          #Requires -Version 7.4
+          $PSNativeCommandUseErrorActionPreference = $true
           if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) {
             Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
           }
 
       - name: Run PSScriptAnalyzer
         shell: pwsh
-        run: ./.github/scripts/Invoke-PSScriptAnalyzer.ps1
+        run: |
+          #Requires -Version 7.4
+          $PSNativeCommandUseErrorActionPreference = $true
+          ./.github/scripts/Invoke-PSScriptAnalyzer.ps1
