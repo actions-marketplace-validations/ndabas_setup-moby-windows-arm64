@@ -7,6 +7,12 @@ on:
         description: Name of a workflow artifact containing docker.exe and dockerd.exe to test instead of a release.
         type: string
         default: ''
+      installer-artifact-name:
+        description: >-
+          Name of a workflow artifact containing docker-windows-arm64-setup.exe to test instead of the installer
+          from a release.
+        type: string
+        default: ''
       version:
         description: Release to test when no artifact is given.
         type: string
@@ -61,7 +67,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        method: [action, script]
+        method: [action, script, installer]
     name: test (${{ matrix.method }})
     steps:
       - name: Check out repository
@@ -102,11 +108,67 @@ jobs:
           "docker-path=$installPath" >> $env:GITHUB_OUTPUT
           "version=$(if ($env:SOURCE_PATH) { 'local' } else { $env:VERSION })" >> $env:GITHUB_OUTPUT
 
+      - name: Download installer
+        if: matrix.method == 'installer' && inputs.installer-artifact-name != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.installer-artifact-name }}
+          path: installer-bin
+
+      - name: Download installer from a release
+        if: matrix.method == 'installer' && inputs.installer-artifact-name == ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version || 'latest' }}
+        run: |
+          $asset = 'docker-windows-arm64-setup.exe'
+          if ($env:VERSION -eq 'latest') {
+            # The repository's "Latest" release may be a release of the action itself (e.g. v1),
+            # so pick the highest docker-vX.Y.Z release instead.
+            $tags = gh release list --repo $env:GITHUB_REPOSITORY --exclude-drafts --exclude-pre-releases --limit 100 --json tagName --jq '.[].tagName'
+            if ($LASTEXITCODE -ne 0) { throw "Could not list the releases of $env:GITHUB_REPOSITORY" }
+            $tag = $tags | Where-Object { $_ -match '^docker-v\d+\.\d+\.\d+$' } |
+              Sort-Object { [version]($_ -replace '^docker-v', '') } -Descending | Select-Object -First 1
+            if (-not $tag) { throw "Could not find a docker-v* release in $env:GITHUB_REPOSITORY" }
+          } elseif ($env:VERSION -like 'docker-*') {
+            $tag = $env:VERSION
+          } else {
+            $tag = 'docker-v' + ($env:VERSION -replace '^v', '')
+            }
+
+            Write-Host "Downloading $asset from $tag"
+          gh release download $tag --repo $env:GITHUB_REPOSITORY --dir installer-bin --clobber `
+            --pattern $asset --pattern "$asset.sha256"
+          if ($LASTEXITCODE -ne 0) { throw "Could not download $asset from release $tag" }
+          $expected = ((Get-Content "installer-bin\$asset.sha256" -Raw).Trim() -split '\s+')[0]
+          $actual = (Get-FileHash "installer-bin\$asset" -Algorithm SHA256).Hash
+          if ($actual -ne $expected) { throw "Checksum mismatch for $asset`: expected $expected, got $actual" }
+
+      - name: Set up moby with the installer
+        id: setup-installer
+        if: matrix.method == 'installer'
+        shell: pwsh
+        run: |
+          $installer = (Resolve-Path installer-bin\docker-windows-arm64-setup.exe).Path
+          $installPath = Join-Path $env:RUNNER_TEMP 'moby'
+          # Run twice to exercise upgrading an existing installation. /D= must be the last argument and unquoted.
+          for ($i = 0; $i -lt 2; $i++) {
+            $process = Start-Process $installer -ArgumentList '/S', "/D=$installPath" -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "The installer failed with exit code $($process.ExitCode)" }
+          }
+          foreach ($file in 'docker.exe', 'dockerd.exe', 'Install-Moby.ps1', 'uninstall.exe') {
+            if (-not (Test-Path (Join-Path $installPath $file))) { throw "$file was not installed to $installPath" }
+          }
+          $installPath >> $env:GITHUB_PATH
+          "docker-path=$installPath" >> $env:GITHUB_OUTPUT
+          "version=installer" >> $env:GITHUB_OUTPUT
+
       - name: Check installed version
         shell: pwsh
         env:
-          DOCKER_PATH: ${{ steps.setup-action.outputs.docker-path || steps.setup-script.outputs.docker-path }}
-          INSTALLED_VERSION: ${{ steps.setup-action.outputs.version || steps.setup-script.outputs.version }}
+          DOCKER_PATH: ${{ steps.setup-action.outputs.docker-path || steps.setup-script.outputs.docker-path || steps.setup-installer.outputs.docker-path }}
+          INSTALLED_VERSION: ${{ steps.setup-action.outputs.version || steps.setup-script.outputs.version || steps.setup-installer.outputs.version }}
           EXPECTED_VERSION: ${{ inputs.expected-version }}
         run: |
           Write-Host "Installed $env:INSTALLED_VERSION in $env:DOCKER_PATH"
@@ -141,3 +203,30 @@ jobs:
           $output = docker run --rm moby-smoke-test
           if ($LASTEXITCODE -ne 0) { throw "Run failed with exit code $LASTEXITCODE" }
           if ("$output".Trim() -ne 'built') { throw "Unexpected output: $output" }
+
+      - name: Uninstall
+        if: matrix.method != 'action'
+        shell: pwsh
+        env:
+          METHOD: ${{ matrix.method }}
+          DOCKER_PATH: ${{ steps.setup-script.outputs.docker-path || steps.setup-installer.outputs.docker-path }}
+        run: |
+          if ($env:METHOD -eq 'script') {
+            ./Install-Moby.ps1 -Uninstall -InstallPath $env:DOCKER_PATH
+          } else {
+            # _?= runs the uninstaller in place so that it can be waited for; it then can't delete itself.
+            $uninstaller = Join-Path $env:DOCKER_PATH 'uninstall.exe'
+            $process = Start-Process $uninstaller -ArgumentList '/S', "_?=$env:DOCKER_PATH" -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "The uninstaller failed with exit code $($process.ExitCode)" }
+            if (Test-Path 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\moby') {
+              throw 'The uninstall registry key was not removed'
+            }
+          }
+          if (Get-Service docker -ErrorAction SilentlyContinue) { throw 'The docker service was not removed' }
+          if (([Environment]::GetEnvironmentVariable('Path', 'Machine') -split ';') -contains $env:DOCKER_PATH) {
+            throw "$env:DOCKER_PATH was not removed from the machine PATH"
+          }
+          if (Test-Path $env:DOCKER_PATH) {
+            $left = @(Get-ChildItem $env:DOCKER_PATH -Force | Where-Object Name -ne 'uninstall.exe')
+            if ($left) { throw "Files were left in $env:DOCKER_PATH`: $($left.Name -join ', ')" }
+          }

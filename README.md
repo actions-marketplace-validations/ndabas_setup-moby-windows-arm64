@@ -81,6 +81,7 @@ so `docker` works from non-elevated shells. It also sets `exec-opts` to `isolati
 | `-InstallPath`       | Where to install the binaries.                                                                    |
 | `-NoPath`, `-NoStart` | Don't add the binaries to the machine `PATH` / don't start the service.                          |
 | `-Force`             | Replace a `docker` service that runs a `dockerd.exe` from another location.                       |
+| `-Uninstall`         | Remove the installation instead (see below).                                                      |
 
 For example:
 
@@ -90,18 +91,43 @@ For example:
 
 See `Get-Help .\Install-Moby.ps1 -Full` for details.
 
+To uninstall, run `.\Install-Moby.ps1 -Uninstall` (with the same `-InstallPath`, if you changed it). This stops and
+removes the `docker` service, removes the install directory from the machine `PATH` and deletes the binaries.
+`daemon.json`, images and containers are left in place.
+
+### Using the installer
+
+New releases also include `docker-windows-arm64-setup.exe`, a basic [NSIS](https://nsis.sourceforge.io) installer
+built from [installer/moby.nsi](installer/moby.nsi). It bundles the binaries and `Install-Moby.ps1`, and runs the
+script with its default options to install to the chosen directory (`C:\Program Files\moby` by default). It
+registers an uninstaller in Apps & features, which runs `Install-Moby.ps1 -Uninstall`.
+Running a newer installer upgrades the installation.
+
+The installer must be run as an Administrator, and gives the user who runs it access to the `docker_engine`
+pipe. If the Containers feature had to be enabled, it offers to restart Windows. For an unattended installation,
+use `docker-windows-arm64-setup.exe /S`, optionally followed by `/D=C:\path\to\moby` (`/D=` must be last and not
+quoted). To uninstall silently, run `uninstall.exe /S` from the install directory.
+
 ## Releases
 
 The [Build and release](.github/workflows/release.yml) workflow runs weekly and can be triggered manually. It looks
 up the latest moby release, and if this repository doesn't have a release with the same tag yet, it:
 
-1. builds `dockerd.exe` from that tag with `hack/make.ps1 -Client -Daemon` on a `windows-11-arm` runner,
-2. tests the build with the [Test](.github/workflows/test.yml) workflow, which sets up the daemon with both this
-   action and `Install-Moby.ps1`, then runs and builds containers, and
-3. publishes `docker-windows-arm64.zip` and its SHA-256 checksum as a release tagged with the moby tag, e.g.
-   `docker-v29.9.0`.
+1. builds `dockerd.exe` from that tag with `hack/make.ps1 -Client -Daemon` on a `windows-11-arm` runner, and
+   builds the installer from the binaries with the runner's `makensis`,
+2. tests the build with the [Test](.github/workflows/test.yml) workflow, which sets up the daemon with this
+   action, `Install-Moby.ps1` and the installer, runs and builds containers, then uninstalls with the script and
+   the installer's uninstaller, and
+3. publishes `docker-windows-arm64.zip`, `docker-windows-arm64-setup.exe` and their SHA-256 checksums as a
+   release tagged with the moby tag, e.g. `docker-v29.9.0`.
 
-To build a specific moby tag, run the workflow manually and set the `moby-tag` input.
+The Test workflow also runs on pull requests that change the action or the script. It then tests the latest release,
+including its installer.
+
+To build a specific moby tag, run the workflow manually and set the `moby-tag` input. Releases are only made from
+the default branch, and only for tags that don't have a release yet; otherwise a manual run builds and tests the tag
+without releasing it. To test changes to the build or the installer, run the workflow manually on your branch.
+Scheduled runs do nothing if the release already exists.
 
 The `docker.exe` client and `docker-buildx.exe` in the zip are the x64 binaries that `hack/make.ps1 -Client`
 downloads; they run under emulation on Windows ARM64.

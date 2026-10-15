@@ -24,6 +24,8 @@
     registered without flags, because a setting given both as a flag and in
     daemon.json makes dockerd refuse to start.
 
+    With -Uninstall, the script removes an installation made by it instead.
+
 .PARAMETER Version
     Release to install: "latest", or a moby release tag such as
     "docker-v29.9.0" ("29.9.0" and "v29.9.0" are also accepted).
@@ -72,6 +74,12 @@
 .PARAMETER Force
     Replace a "docker" service that runs a dockerd.exe from another location.
 
+.PARAMETER Uninstall
+    Stop and remove the "docker" service if it runs dockerd.exe from
+    -InstallPath, remove -InstallPath from the machine PATH, and delete the
+    docker*.exe binaries from it. daemon.json, images and containers are
+    left in place.
+
 .EXAMPLE
     .\Install-Moby.ps1
 
@@ -82,6 +90,9 @@
 
 .EXAMPLE
     & ([scriptblock]::Create((irm https://raw.githubusercontent.com/ndabas/setup-moby-windows-arm64/main/Install-Moby.ps1))) -Version latest
+
+.EXAMPLE
+    .\Install-Moby.ps1 -Uninstall
 #>
 [CmdletBinding()]
 param(
@@ -98,7 +109,8 @@ param(
     [switch] $DefenderExclusion,
     [switch] $NoPath,
     [switch] $NoStart,
-    [switch] $Force
+    [switch] $Force,
+    [switch] $Uninstall
 )
 
 $ErrorActionPreference = 'Stop'
@@ -132,6 +144,54 @@ if (-not $identity.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrat
     throw 'This script must be run from an elevated (Administrator) PowerShell.'
 }
 
+$InstallPath = [IO.Path]::GetFullPath($InstallPath)
+$dockerdPath = Join-Path $InstallPath 'dockerd.exe'
+
+#endregion
+
+#region Uninstall
+
+if ($Uninstall) {
+    $service = Get-DockerService
+    if ($service -and $service.PathName.IndexOf($dockerdPath, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        Write-Host "Stopping the '$ServiceName' service..."
+        Stop-Service -Name $ServiceName
+        # The binaries can't be deleted until the process has exited.
+        if ($service.ProcessId) { Wait-Process -Id $service.ProcessId -Timeout 60 -ErrorAction SilentlyContinue }
+        if (Test-Path $dockerdPath) {
+            # Also removes the event log source registered with the service.
+            & $dockerdPath --unregister-service --service-name $ServiceName
+            if ($LASTEXITCODE -ne 0) { throw "dockerd --unregister-service failed with exit code $LASTEXITCODE" }
+        } else {
+            sc.exe delete $ServiceName | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "sc.exe delete $ServiceName failed with exit code $LASTEXITCODE" }
+        }
+        Write-Host "Removed the '$ServiceName' service"
+    } elseif ($service) {
+        Write-Host "Leaving the '$ServiceName' service, which runs another dockerd: $($service.PathName)"
+    }
+
+    $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $entries = $machinePath -split ';'
+    if ($entries -contains $InstallPath) {
+        [Environment]::SetEnvironmentVariable('Path', (($entries | Where-Object { $_ -ne $InstallPath }) -join ';'), 'Machine')
+        Write-Host "Removed $InstallPath from the machine PATH"
+    }
+
+    if (Test-Path $InstallPath) {
+        Get-ChildItem $InstallPath -Filter 'docker*.exe' -File | Remove-Item -Force
+        if (-not (Get-ChildItem $InstallPath -Force)) { Remove-Item $InstallPath -Force }
+        Write-Host "Removed the docker binaries from $InstallPath"
+    }
+
+    Write-Host "Uninstalled. $ConfigFile and dockerd's data root were left in place."
+    return
+}
+
+#endregion
+
+#region Install preflight
+
 # PROCESSOR_ARCHITECTURE is AMD64 in an emulated x64 process; the machine-wide value is the native one.
 $arch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').PROCESSOR_ARCHITECTURE
 if ($arch -ne 'ARM64') { throw "This build is for Windows ARM64; this machine is $arch." }
@@ -150,8 +210,6 @@ foreach ($p in $Principal) {
     }
 }
 
-$InstallPath = [IO.Path]::GetFullPath($InstallPath)
-$dockerdPath = Join-Path $InstallPath 'dockerd.exe'
 $service = Get-DockerService
 $existingService = $service.PathName
 $replaceService = $existingService -and $existingService.IndexOf($dockerdPath, [StringComparison]::OrdinalIgnoreCase) -lt 0
